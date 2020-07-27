@@ -615,6 +615,73 @@ impl<'a, K: 'a + Eq + Hash, V: 'a + Default, S: 'a + BuildHasher> Entry<'a, K, V
     }
 }
 
+impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, S> {
+    /// Ensures a value is in the entry by inserting the default if empty, and returns tuple
+    /// containing a mutable reference to the value in the entry. The tuple optionally contains a
+    /// the key and value of an entry that was evicted from the cache to make space.
+    ///
+    /// # Performance
+    ///
+    /// This method may clone the key of the removed element. This happens when we remove an entry
+    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
+    /// be given ownership of the key, so a copy is made.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_2q::Cache;
+    ///
+    /// let mut cache = Cache::new(1);
+    ///
+    /// cache.entry("a").or_insert(1);
+    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove(2).1 {
+    ///     assert_eq!(old_key, "a");
+    ///     assert_eq!(old_value, 1);
+    /// }
+    /// ```
+    pub fn or_insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
+        match self {
+            Entry::Occupied(entry) => (entry.into_mut(), None),
+            Entry::Vacant(entry) => entry.insert_remove(value),
+        }
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the default function if empty,
+    /// and returns a tuple containing mutable reference to the value in the entry. The tuple
+    /// optionally contains the key and value of an entry that was evicted from the cache to make
+    /// space.
+    ///
+    /// # Performance
+    ///
+    /// This method may clone the key of the removed element. This happens when we remove an entry
+    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
+    /// be given ownership of the key, so a copy is made.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_2q::Cache;
+    ///
+    /// let mut cache = Cache::new(1);
+    ///
+    /// cache.entry("a").or_insert(1);
+    ///
+    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove_with(|| 2).1 {
+    ///     assert_eq!(old_key, "a");
+    ///     assert_eq!(old_value, 1);
+    /// }
+    /// ```
+    pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(K, V)>)
+    where
+        F: FnOnce() -> V
+    {
+        match self {
+            Entry::Occupied(entry) => (entry.into_mut(), None),
+            Entry::Vacant(entry) => entry.insert_remove(default()),
+        }
+    }
+}
+
 /// A view into an occupied entry in a [`Cache`].
 /// It is part of the [`Entry`] enum.
 ///
@@ -924,6 +991,65 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S>
         }
     }
 }
+
+impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S> {
+    /// Sets the value of the entry with the VacantEntry's key and returns a tuple containing a
+    /// mutable reference to the value and optionally the key and value of an entry that was
+    /// evicted from the cache to make space.
+    ///
+    /// # Performance
+    ///
+    /// This method may clone the key of the removed element. This happens when we remove an entry
+    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
+    /// be given ownership of the key, so a copy is made.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_2q::{Cache, Entry};
+    ///
+    /// let mut cache: Cache<&str, u32> = Cache::new(1);
+    ///
+    /// cache.entry("a").or_insert(1);
+    ///
+    /// if let Entry::Vacant(o) = cache.entry("b") {
+    ///     if let Some((old_key, old_value)) = o.insert_remove(2).1 {
+    ///         assert_eq!(old_key, "a");
+    ///         assert_eq!(old_value, 1);
+    ///     } else {
+    ///         panic!("insert_replace should return old key and value");
+    ///     }
+    /// } else {
+    ///     panic!("Entry should be vacant");
+    /// }
+    /// assert_eq!(*cache.get("b").unwrap(), 2);
+    /// ```
+    pub fn insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
+        let VacantEntry { cache, key, kind } = self;
+        let mut removed_item: Option<(K, V)> = None;
+        match kind {
+            VacantKind::Ghost => {
+                cache.ghost.remove(&key).expect("No ghost with key");
+                if cache.frequent.len() + 1 > cache.size {
+                    removed_item = cache.frequent.pop_front();
+                }
+                (cache.frequent.entry(key).or_insert(value), removed_item)
+            }
+            VacantKind::Unknown => {
+                if cache.recent.len() + 1 > cache.size {
+                    let (old_key, old_value) = cache.recent.pop_front().unwrap();
+                    if cache.ghost.len() + 1 > cache.ghost_size {
+                        cache.ghost.pop_back();
+                    }
+                    cache.ghost.insert(old_key.clone(), ());
+                    removed_item = Some((old_key, old_value));
+                }
+                (cache.recent.entry(key).or_insert(value), removed_item)
+            }
+        }
+    }
+}
+
 type InnerIter<'a, K, V> =
     iter::Chain<linked_hash_map::Iter<'a, K, V>, linked_hash_map::Iter<'a, K, V>>;
 
