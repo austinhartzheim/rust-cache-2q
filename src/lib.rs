@@ -16,7 +16,7 @@
 )]
 #![warn(clippy::pedantic)]
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::iter;
@@ -620,11 +620,8 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, 
     /// containing a mutable reference to the value in the entry. The tuple optionally contains a
     /// the key and value of an entry that was evicted from the cache to make space.
     ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
+    /// This method is only available when `K` implements `Clone` due to the requirements of
+    /// storing the key in a [`Cow`] pointer.
     ///
     /// # Examples
     ///
@@ -635,11 +632,11 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, 
     ///
     /// cache.entry("a").or_insert(1);
     /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove(2).1 {
-    ///     assert_eq!(old_key, "a");
+    ///     assert_eq!(*old_key, "a");
     ///     assert_eq!(old_value, 1);
     /// }
     /// ```
-    pub fn or_insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
+    pub fn or_insert_remove(self, value: V) -> (&'a mut V, Option<(Cow<'a, K>, V)>) {
         match self {
             Entry::Occupied(entry) => (entry.into_mut(), None),
             Entry::Vacant(entry) => entry.insert_remove(value),
@@ -651,11 +648,8 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, 
     /// optionally contains the key and value of an entry that was evicted from the cache to make
     /// space.
     ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
+    /// This method is only available when `K` implements `Clone` due to the requirements of
+    /// storing the key in a [`Cow`] pointer.
     ///
     /// # Examples
     ///
@@ -667,11 +661,11 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, 
     /// cache.entry("a").or_insert(1);
     ///
     /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove_with(|| 2).1 {
-    ///     assert_eq!(old_key, "a");
+    ///     assert_eq!(*old_key, "a");
     ///     assert_eq!(old_value, 1);
     /// }
     /// ```
-    pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(K, V)>)
+    pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(Cow<'a, K>, V)>)
     where
         F: FnOnce() -> V
     {
@@ -997,11 +991,8 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
     /// mutable reference to the value and optionally the key and value of an entry that was
     /// evicted from the cache to make space.
     ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
+    /// This method is only available when `K` implements `Clone` due to the requirements of
+    /// storing the key in a [`Cow`] pointer.
     ///
     /// # Examples
     ///
@@ -1014,7 +1005,7 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
     ///
     /// if let Entry::Vacant(o) = cache.entry("b") {
     ///     if let Some((old_key, old_value)) = o.insert_remove(2).1 {
-    ///         assert_eq!(old_key, "a");
+    ///         assert_eq!(*old_key, "a");
     ///         assert_eq!(old_value, 1);
     ///     } else {
     ///         panic!("insert_replace should return old key and value");
@@ -1024,14 +1015,14 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
     /// }
     /// assert_eq!(*cache.get("b").unwrap(), 2);
     /// ```
-    pub fn insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
+    pub fn insert_remove(self, value: V) -> (&'a mut V, Option<(Cow<'a, K>, V)>) {
         let VacantEntry { cache, key, kind } = self;
-        let mut removed_item: Option<(K, V)> = None;
+        let mut removed_item: Option<(Cow<K>, V)> = None;
         match kind {
             VacantKind::Ghost => {
                 cache.ghost.remove(&key).expect("No ghost with key");
                 if cache.frequent.len() + 1 > cache.size {
-                    removed_item = cache.frequent.pop_front();
+                    removed_item = cache.frequent.pop_front().map(|(k, v)| (Cow::Owned(k), v));
                 }
                 (cache.frequent.entry(key).or_insert(value), removed_item)
             }
@@ -1041,8 +1032,9 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
                     if cache.ghost.len() + 1 > cache.ghost_size {
                         cache.ghost.pop_back();
                     }
-                    cache.ghost.insert(old_key.clone(), ());
-                    removed_item = Some((old_key, old_value));
+                    cache.ghost.insert(old_key, ());
+
+                    removed_item = Some((Cow::Borrowed(cache.ghost.front().unwrap().0), old_value));
                 }
                 (cache.recent.entry(key).or_insert(value), removed_item)
             }
