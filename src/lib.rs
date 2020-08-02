@@ -563,6 +563,65 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, S> {
         }
     }
 
+    /// Ensures a value is in the entry by inserting the default if empty, and returns tuple
+    /// containing a mutable reference to the value in the entry. The tuple optionally contains a
+    /// the key and value of an entry that was evicted from the cache to make space.
+    ///
+    /// To avoid potentially unnecessary cloning, this method returns `RefOrOwned<K>` because the
+    /// cache needs to retain ownership of `K` to populate a ghost entry in some cases.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_2q::Cache;
+    ///
+    /// let mut cache = Cache::new(1);
+    ///
+    /// cache.entry("a").or_insert(1);
+    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove(2).1 {
+    ///     assert_eq!(old_key.as_ref(), &"a");
+    ///     assert_eq!(old_value, 1);
+    /// }
+    /// ```
+    pub fn or_insert_remove(self, value: V) -> (&'a mut V, Option<(RefOrOwned<'a, K>, V)>) {
+        match self {
+            Entry::Occupied(entry) => (entry.into_mut(), None),
+            Entry::Vacant(entry) => entry.insert_remove(value),
+        }
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the default function if empty,
+    /// and returns a tuple containing mutable reference to the value in the entry. The tuple
+    /// optionally contains the key and value of an entry that was evicted from the cache to make
+    /// space.
+    ///
+    /// To avoid potentially unnecessary cloning, this method returns `RefOrOwned<K>` because the
+    /// cache needs to retain ownership of `K` to populate a ghost entry in some cases.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_2q::Cache;
+    ///
+    /// let mut cache = Cache::new(1);
+    ///
+    /// cache.entry("a").or_insert(1);
+    ///
+    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove_with(|| 2).1 {
+    ///     assert_eq!(old_key.as_ref(), &"a");
+    ///     assert_eq!(old_value, 1);
+    /// }
+    /// ```
+    pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(RefOrOwned<'a, K>, V)>)
+    where
+        F: FnOnce() -> V
+    {
+        match self {
+            Entry::Occupied(entry) => (entry.into_mut(), None),
+            Entry::Vacant(entry) => entry.insert_remove(default()),
+        }
+    }
+
     /// Provides in-place mutable access to an occupied entry before any
     /// potential inserts into the map.
     ///
@@ -611,73 +670,6 @@ impl<'a, K: 'a + Eq + Hash, V: 'a + Default, S: 'a + BuildHasher> Entry<'a, K, V
         match self {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(V::default()),
-        }
-    }
-}
-
-impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, S> {
-    /// Ensures a value is in the entry by inserting the default if empty, and returns tuple
-    /// containing a mutable reference to the value in the entry. The tuple optionally contains a
-    /// the key and value of an entry that was evicted from the cache to make space.
-    ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use cache_2q::Cache;
-    ///
-    /// let mut cache = Cache::new(1);
-    ///
-    /// cache.entry("a").or_insert(1);
-    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove(2).1 {
-    ///     assert_eq!(old_key, "a");
-    ///     assert_eq!(old_value, 1);
-    /// }
-    /// ```
-    pub fn or_insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
-        match self {
-            Entry::Occupied(entry) => (entry.into_mut(), None),
-            Entry::Vacant(entry) => entry.insert_remove(value),
-        }
-    }
-
-    /// Ensures a value is in the entry by inserting the result of the default function if empty,
-    /// and returns a tuple containing mutable reference to the value in the entry. The tuple
-    /// optionally contains the key and value of an entry that was evicted from the cache to make
-    /// space.
-    ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use cache_2q::Cache;
-    ///
-    /// let mut cache = Cache::new(1);
-    ///
-    /// cache.entry("a").or_insert(1);
-    ///
-    /// if let Some((old_key, old_value)) = cache.entry("b").or_insert_remove_with(|| 2).1 {
-    ///     assert_eq!(old_key, "a");
-    ///     assert_eq!(old_value, 1);
-    /// }
-    /// ```
-    pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(K, V)>)
-    where
-        F: FnOnce() -> V
-    {
-        match self {
-            Entry::Occupied(entry) => (entry.into_mut(), None),
-            Entry::Vacant(entry) => entry.insert_remove(default()),
         }
     }
 }
@@ -990,18 +982,13 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S>
             }
         }
     }
-}
 
-impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S> {
     /// Sets the value of the entry with the VacantEntry's key and returns a tuple containing a
     /// mutable reference to the value and optionally the key and value of an entry that was
     /// evicted from the cache to make space.
     ///
-    /// # Performance
-    ///
-    /// This method may clone the key of the removed element. This happens when we remove an entry
-    /// from the recent list and add its key to the ghost list. In this case, the ghost list must
-    /// be given ownership of the key, so a copy is made.
+    /// To avoid potentially unnecessary cloning, this method returns `RefOrOwned<K>` because the
+    /// cache needs to retain ownership of `K` to populate a ghost entry in some cases.
     ///
     /// # Examples
     ///
@@ -1014,7 +1001,7 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
     ///
     /// if let Entry::Vacant(o) = cache.entry("b") {
     ///     if let Some((old_key, old_value)) = o.insert_remove(2).1 {
-    ///         assert_eq!(old_key, "a");
+    ///         assert_eq!(old_key.as_ref(), &"a");
     ///         assert_eq!(old_value, 1);
     ///     } else {
     ///         panic!("insert_replace should return old key and value");
@@ -1024,14 +1011,14 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
     /// }
     /// assert_eq!(*cache.get("b").unwrap(), 2);
     /// ```
-    pub fn insert_remove(self, value: V) -> (&'a mut V, Option<(K, V)>) {
+    pub fn insert_remove(self, value: V) -> (&'a mut V, Option<(RefOrOwned<'a, K>, V)>) {
         let VacantEntry { cache, key, kind } = self;
-        let mut removed_item: Option<(K, V)> = None;
+        let mut removed_item: Option<(RefOrOwned<K>, V)> = None;
         match kind {
             VacantKind::Ghost => {
                 cache.ghost.remove(&key).expect("No ghost with key");
                 if cache.frequent.len() + 1 > cache.size {
-                    removed_item = cache.frequent.pop_front();
+                    removed_item = cache.frequent.pop_front().map(|(k, v)| (RefOrOwned::Owned(k), v));
                 }
                 (cache.frequent.entry(key).or_insert(value), removed_item)
             }
@@ -1041,8 +1028,8 @@ impl<'a, K: 'a + Clone + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, 
                     if cache.ghost.len() + 1 > cache.ghost_size {
                         cache.ghost.pop_back();
                     }
-                    cache.ghost.insert(old_key.clone(), ());
-                    removed_item = Some((old_key, old_value));
+                    cache.ghost.insert(old_key, ());
+                    removed_item = Some((RefOrOwned::Ref(cache.ghost.front().unwrap().0), old_value));
                 }
                 (cache.recent.entry(key).or_insert(value), removed_item)
             }
@@ -1119,6 +1106,53 @@ enum VacantKind {
 enum OccupiedKind {
     Recent,
     Frequent,
+}
+
+/// Provides either ownership of `T` or a reference to `T`.
+///
+/// Used to return ownership of a key once completely removed from the cache. When the key remains
+/// in the cache (eg, as a ghost entry), a reference is returned instead.
+pub enum RefOrOwned<'a, T> {
+    /// Ownership of `T`.
+    Owned(T),
+    /// Reference to `T`.
+    Ref(&'a T),
+}
+
+impl<T: Clone> RefOrOwned<'_, T> {
+    /// Returns an owned T, cloning if necessary.
+    ///
+    /// # Examples
+    /// ```
+    /// use cache_2q::RefOrOwned;
+    /// 
+    /// let owned: u32 = RefOrOwned::Owned(11).into_owned();
+    /// let owned: u32 = RefOrOwned::Ref(&11).into_owned();
+    /// ```
+    pub fn into_owned(self) -> T {
+        match self {
+            Self::Owned(t) => t,
+            Self::Ref(t) => t.clone(),
+        }
+    }
+}
+
+impl<'a, T> AsRef<T> for RefOrOwned<'a, T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            Self::Owned(t) => t,
+            Self::Ref(t) => *t,
+        }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for RefOrOwned<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Owned(t) => f.debug_tuple("Owned").field(t).finish(),
+            Self::Ref(t) => f.debug_tuple("Ref").field(t).finish(),
+        }
+    }
 }
 
 #[cfg(test)]
