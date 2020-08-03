@@ -614,7 +614,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> Entry<'a, K, V, S> {
     /// ```
     pub fn or_insert_remove_with<F>(self, default: F) -> (&'a mut V, Option<(RefOrOwned<'a, K>, V)>)
     where
-        F: FnOnce() -> V
+        F: FnOnce() -> V,
     {
         match self {
             Entry::Occupied(entry) => (entry.into_mut(), None),
@@ -1018,7 +1018,10 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S>
             VacantKind::Ghost => {
                 cache.ghost.remove(&key).expect("No ghost with key");
                 if cache.frequent.len() + 1 > cache.size {
-                    removed_item = cache.frequent.pop_front().map(|(k, v)| (RefOrOwned::Owned(k), v));
+                    removed_item = cache
+                        .frequent
+                        .pop_front()
+                        .map(|(k, v)| (RefOrOwned::Owned(k), v));
                 }
                 (cache.frequent.entry(key).or_insert(value), removed_item)
             }
@@ -1029,7 +1032,8 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher> VacantEntry<'a, K, V, S>
                         cache.ghost.pop_back();
                     }
                     cache.ghost.insert(old_key, ());
-                    removed_item = Some((RefOrOwned::Ref(cache.ghost.front().unwrap().0), old_value));
+                    removed_item =
+                        Some((RefOrOwned::Ref(cache.ghost.front().unwrap().0), old_value));
                 }
                 (cache.recent.entry(key).or_insert(value), removed_item)
             }
@@ -1125,7 +1129,7 @@ impl<T: Clone> RefOrOwned<'_, T> {
     /// # Examples
     /// ```
     /// use cache_2q::RefOrOwned;
-    /// 
+    ///
     /// let owned: u32 = RefOrOwned::Owned(11).into_owned();
     /// let owned: u32 = RefOrOwned::Ref(&11).into_owned();
     /// ```
